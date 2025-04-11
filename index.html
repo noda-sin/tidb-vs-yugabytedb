@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TiDB vs YugabyteDB Latency Visualization</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>TiDB vs YugabyteDB Latency Visualization</h1>
+
+    <div class="controls">
+        <label for="db-type">Database:</label>
+        <select id="db-type">
+            <option value="tidb" selected>TiDB</option>
+            <option value="yugabyte">YugabyteDB</option>
+        </select>
+
+        <label for="client-region">Client Region:</label>
+        <select id="client-region">
+            <option value="a" selected>Region A</option>
+            <option value="b">Region B</option>
+            <option value="c">Region C</option>
+        </select>
+
+        <label for="request-type">Request Type:</label>
+        <select id="request-type">
+            <option value="point-read" selected>Point-Read</option>
+            <option value="range-read">Range-Read</option>
+            <option value="1pc-write">1PC Write</option>
+            <option value="2pc-write">2PC Write</option>
+        </select>
+
+        <label for="control-leader-location">Control Plane Leader:</label>
+        <select id="control-leader-location">
+            <option value="a" selected>Region A</option>
+            <option value="b">Region B</option>
+            <option value="c">Region C</option>
+        </select>
+
+        <label for="data-leader-location" style="margin-left: 10px;">Data Plane Leader:</label>
+        <select id="data-leader-location">
+            <option value="a" selected>Region A</option>
+            <option value="b">Region B</option>
+            <option value="c">Region C</option>
+        </select>
+
+        <!-- Transaction Tablet Leader Location (Initially Hidden) -->
+        <span id="transaction-leader-controls" style="display: none;">
+             <label for="transaction-leader-location">Transaction Tablet Leader:</label>
+             <select id="transaction-leader-location">
+                 <option value="a" selected>Region A</option>
+                 <option value="b">Region B</option>
+                 <option value="c">Region C</option>
+             </select>
+        </span>
+
+        <label for="speed-slider" style="margin-left: 15px;">Speed:</label>
+        <input type="range" id="speed-slider" min="1" max="10" value="5">
+        <span id="speed-value">5</span>
+
+        <button id="simulate" style="margin-left: 20px;">Simulate</button>
+    </div>
+
+    <div class="visualization">
+        <div class="region" id="region-a">
+            <h2>Region A</h2>
+            <div class="node client" id="client">Client</div>
+            <div class="node tidb-node" id="tidb-a">TiDB</div>
+            <div class="node tikv-node" id="tikv-a">TiKV</div>
+            <div class="node pd-leader-node" id="pd-a">PD Leader</div>
+            <div class="node yb-tserver-node" id="yb-tserver-a" style="display: none;">YB-TServer</div>
+            <div class="node yb-master-node" id="yb-master-a" style="display: none;">YB-Master</div>
+        </div>
+        <div class="region" id="region-b">
+            <h2>Region B</h2>
+            <div class="node tidb-node" id="tidb-b" style="display: none;">TiDB</div>
+            <div class="node tikv-node" id="tikv-b">TiKV</div>
+            <div class="node pd-leader-node" id="pd-b">PD Leader</div>
+            <div class="node yb-tserver-node" id="yb-tserver-b" style="display: none;">YB-TServer</div>
+            <div class="node yb-master-node" id="yb-master-b" style="display: none;">YB-Master</div>
+        </div>
+        <div class="region" id="region-c">
+            <h2>Region C</h2>
+            <div class="node tidb-node" id="tidb-c" style="display: none;">TiDB</div>
+            <div class="node tikv-node" id="tikv-c">TiKV</div>
+            <div class="node pd-leader-node" id="pd-c" style="display: none;">PD Leader</div>
+            <div class="node yb-tserver-node" id="yb-tserver-c" style="display: none;">YB-TServer</div>
+            <div class="node yb-master-node" id="yb-master-c" style="display: none;">YB-Master</div>
+        </div>
+        <svg id="arrows-svg" width="100%" height="100%"></svg>
+    </div>
+
+    <div class="latency-info">
+        Total Latency: <span id="total-latency">0</span> ms
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
