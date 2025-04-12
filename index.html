@@ -11,7 +11,7 @@
 
     <div class="controls">
         <label for="db-type">Database:</label>
-        <select id="db-type">
+        <select id="db-type" devinid="db-select">
             <option value="tidb" selected>TiDB</option>
             <option value="yugabyte">YugabyteDB</option>
         </select>
@@ -38,12 +38,20 @@
             <option value="c">Region C</option>
         </select>
 
-        <label for="data-leader-location" style="margin-left: 10px;">Data Plane Leader:</label>
-        <select id="data-leader-location">
-            <option value="a" selected>Region A</option>
-            <option value="b">Region B</option>
-            <option value="c">Region C</option>
-        </select>
+        <span id="data-leader-single-controls">
+             <label for="data-leader-location" style="margin-left: 10px;">Data Plane Leader:</label>
+             <select id="data-leader-location">
+                 <option value="a" selected>Region A</option>
+                 <option value="b">Region B</option>
+                 <option value="c">Region C</option>
+             </select>
+        </span>
+        <div id="data-plane-regions-multi" style="display: none; margin-left: 10px; border: 1px solid #eee; padding: 5px; border-radius: 4px; display: inline-block; vertical-align: middle;">
+             <span style="margin-right: 5px;">Data Plane Regions:</span>
+             <label style="margin-right: 8px;"><input type="checkbox" name="data-region" value="a"> A</label>
+             <label style="margin-right: 8px;"><input type="checkbox" name="data-region" value="b"> B</label>
+             <label><input type="checkbox" name="data-region" value="c"> C</label>
+        </div>
 
         <!-- Transaction Tablet Leader Location (Initially Hidden) -->
         <span id="transaction-leader-controls" style="display: none;">

@@ -13,12 +13,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const transactionLeaderLocationSelect = document.getElementById('transaction-leader-location');
     const clientRegionSelect = document.getElementById('client-region');
     const controlsToToggle = [clientRegionSelect, dbTypeSelect, requestTypeSelect, controlLeaderLocationSelect, dataLeaderLocationSelect, transactionLeaderLocationSelect, speedSlider, startButton];
+    const dataLeaderSingleControls = document.getElementById('data-leader-single-controls');
+    const dataPlaneRegionsMultiDiv = document.getElementById('data-plane-regions-multi');
+    const dataRegionCheckboxes = dataPlaneRegionsMultiDiv.querySelectorAll('input[name="data-region"]');
+
     const LOCAL_STORAGE_PREFIX = 'simulator_';
 
     const RTT = 30;
     const ONE_WAY_LATENCY = RTT / 2;
-    const INTRA_REGION_LATENCY = 1; // Latency for animation within the same region
-    const NETWORK_LATENCY_THRESHOLD = 2; // Minimum network latency to display
+    const INTRA_REGION_LATENCY = 1; // Minimal latency for animation within the same region
+    const NETWORK_LATENCY_THRESHOLD = INTRA_REGION_LATENCY; // Latencies below this are considered local/negligible for accumulation
+
     const REGIONS = ['a', 'b', 'c'];
 
     const getLatency = (region1, region2) => {
@@ -117,16 +122,29 @@ document.addEventListener('DOMContentLoaded', () => {
             if (ybMasterLeaderNode) ybMasterLeaderNode.style.display = '';
         }
 
-        const dataLeaderRegion = dataLeaderLocationSelect.value;
-        const dataLeaderNodeId = dbType === 'tidb' ? `tikv-${dataLeaderRegion}` : `yb-tserver-${dataLeaderRegion}`;
-
         document.querySelectorAll('.tikv-node, .yb-tserver-node').forEach(node => {
             node.classList.remove('data-leader-indicator');
         });
 
-        const dataLeaderNodeElement = document.getElementById(dataLeaderNodeId);
-        if (dataLeaderNodeElement && dataLeaderNodeElement.style.display !== 'none') {
-            dataLeaderNodeElement.classList.add('data-leader-indicator');
+        const requestType = requestTypeSelect.value;
+        if (requestType === 'range-read') {
+            const selectedRegions = Array.from(dataRegionCheckboxes)
+                                        .filter(cb => cb.checked)
+                                        .map(cb => cb.value);
+            selectedRegions.forEach(region => {
+                const nodeId = dbType === 'tidb' ? `tikv-${region}` : `yb-tserver-${region}`;
+                const nodeElement = document.getElementById(nodeId);
+                if (nodeElement && nodeElement.style.display !== 'none') {
+                    nodeElement.classList.add('data-leader-indicator');
+                }
+            });
+        } else {
+             const dataLeaderRegion = dataLeaderLocationSelect.value;
+             const dataLeaderNodeId = dbType === 'tidb' ? `tikv-${dataLeaderRegion}` : `yb-tserver-${dataLeaderRegion}`;
+             const dataLeaderNodeElement = document.getElementById(dataLeaderNodeId);
+             if (dataLeaderNodeElement && dataLeaderNodeElement.style.display !== 'none') {
+                 dataLeaderNodeElement.classList.add('data-leader-indicator');
+             }
         }
     }
 
@@ -175,6 +193,56 @@ document.addEventListener('DOMContentLoaded', () => {
         await sleep(50);
         dot.remove();
         return newTotalLatency;
+    }
+
+
+    async function animateParallelFetch(sourceNodeId, targetNodeIds, clientRegion, accumulatedLatency) {
+        if (!targetNodeIds || targetNodeIds.length === 0) {
+            console.warn("animateParallelFetch called with no target nodes.");
+            return accumulatedLatency; // Return unchanged latency
+        }
+
+        const sourceRegion = clientRegion; // Assume source is client's region for range reads
+        let maxOneWayLatency = 0;
+
+        targetNodeIds.forEach(targetNodeId => {
+            const targetRegionMatch = targetNodeId.match(/-([abc])$/); // Extract region (a, b, or c)
+            if (targetRegionMatch) {
+                const targetRegion = targetRegionMatch[1];
+                const latency = getLatency(sourceRegion, targetRegion);
+                if (latency > maxOneWayLatency) {
+                    maxOneWayLatency = latency;
+                }
+            } else {
+                 console.error(`Could not extract region from targetNodeId: ${targetNodeId}`);
+            }
+        });
+
+        const isNetworkHop = maxOneWayLatency >= NETWORK_LATENCY_THRESHOLD;
+        let currentLatency = accumulatedLatency;
+
+        const promisesOut = targetNodeIds.map((targetNodeId, index) => {
+            const addLatency = (index === 0) && isNetworkHop;
+            return animatePacket(sourceNodeId, targetNodeId, maxOneWayLatency, currentLatency, !addLatency);
+        });
+        const resultsOut = await Promise.all(promisesOut);
+        if (isNetworkHop) {
+            currentLatency += maxOneWayLatency;
+            totalLatencySpan.textContent = currentLatency.toFixed(0); // Update UI immediately
+        }
+
+
+        const promisesIn = targetNodeIds.map((targetNodeId, index) => {
+             const addLatency = (index === 0) && isNetworkHop;
+            return animatePacket(targetNodeId, sourceNodeId, maxOneWayLatency, currentLatency, !addLatency);
+        });
+        const resultsIn = await Promise.all(promisesIn);
+        if (isNetworkHop) {
+            currentLatency += maxOneWayLatency;
+             totalLatencySpan.textContent = currentLatency.toFixed(0); // Update UI immediately
+        }
+
+        return currentLatency; // Return the final accumulated latency
     }
 
     async function animateQuorumWrite(leader, follower1, follower2, accumulatedLatency, isAsync = false) {
@@ -238,25 +306,27 @@ document.addEventListener('DOMContentLoaded', () => {
         return currentLatency;
     }
 
-    async function runTiDBRangeRead(controlLeaderRegion, dataLeaderRegion) {
+    async function runTiDBRangeRead(controlLeaderRegion, dataPlaneParam) { // dataPlaneParam can be string or array
         let currentLatency = 0;
         const clientRegion = clientRegionSelect.value;
         const client = 'client';
         const tidbNode = `tidb-${clientRegion}`;
         const pdLeader = `pd-${controlLeaderRegion}`;
-        const tikvNode = `tikv-${dataLeaderRegion}`;
 
         document.querySelectorAll('.tidb-node').forEach(node => node.style.display = 'none');
         const tidbNodeElement = document.getElementById(tidbNode);
         if (tidbNodeElement) tidbNodeElement.style.display = '';
 
         currentLatency = await animatePacket(client, tidbNode, getLatency(clientRegion, clientRegion), currentLatency);
+
         const latencyToPD = getLatency(clientRegion, controlLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, pdLeader, latencyToPD, currentLatency); // Get TS
+        currentLatency = await animatePacket(tidbNode, pdLeader, latencyToPD, currentLatency);
         currentLatency = await animatePacket(pdLeader, tidbNode, latencyToPD, currentLatency);
-        const latencyToTiKV = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, tikvNode, latencyToTiKV, currentLatency); // Read data
-        currentLatency = await animatePacket(tikvNode, tidbNode, latencyToTiKV, currentLatency);
+
+        const targetRegions = Array.isArray(dataPlaneParam) ? dataPlaneParam : [dataPlaneParam];
+        const tikvNodes = targetRegions.map(region => `tikv-${region}`);
+        currentLatency = await animateParallelFetch(tidbNode, tikvNodes, clientRegion, currentLatency);
+
         currentLatency = await animatePacket(tidbNode, client, getLatency(clientRegion, clientRegion), currentLatency);
         return currentLatency;
     }
@@ -338,17 +408,18 @@ document.addEventListener('DOMContentLoaded', () => {
         return currentLatency;
     }
 
-     async function runYugabyteRangeRead(controlLeaderRegion, dataLeaderRegion) { // Multi-Row Read (Simplified)
+     async function runYugabyteRangeRead(controlLeaderRegion, dataPlaneParam) { // Multi-Row Read (Simplified), dataPlaneParam can be string or array
         let currentLatency = 0;
         const clientRegion = clientRegionSelect.value;
         const client = 'client';
-        const localTServer = `yb-tserver-${clientRegion}`;
-        const tabletLeader = `yb-tserver-${dataLeaderRegion}`;
+        const localTServer = `yb-tserver-${clientRegion}`; // Coordinator TServer
 
         currentLatency = await animatePacket(client, localTServer, getLatency(clientRegion, clientRegion), currentLatency);
-        const latencyToLeader = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(localTServer, tabletLeader, latencyToLeader, currentLatency);
-        currentLatency = await animatePacket(tabletLeader, localTServer, latencyToLeader, currentLatency);
+
+        const targetRegions = Array.isArray(dataPlaneParam) ? dataPlaneParam : [dataPlaneParam];
+        const tabletLeaders = targetRegions.map(region => `yb-tserver-${region}`);
+        currentLatency = await animateParallelFetch(localTServer, tabletLeaders, clientRegion, currentLatency);
+
         currentLatency = await animatePacket(localTServer, client, getLatency(clientRegion, clientRegion), currentLatency);
         return currentLatency;
     }
@@ -424,7 +495,25 @@ document.addEventListener('DOMContentLoaded', () => {
         const db = dbTypeSelect.value;
         const req = requestTypeSelect.value;
         const controlLeader = controlLeaderLocationSelect.value;
-        const dataLeader = dataLeaderLocationSelect.value;
+        let dataPlaneParam; // Can be a single string or an array of strings
+        if (req === 'range-read') {
+            dataPlaneParam = Array.from(dataRegionCheckboxes)
+                                .filter(cb => cb.checked)
+                                .map(cb => cb.value);
+            if (dataPlaneParam.length === 0) {
+                const firstCheckbox = dataRegionCheckboxes[0];
+                 if (firstCheckbox) {
+                     firstCheckbox.checked = true;
+                     dataPlaneParam = [firstCheckbox.value];
+                     console.warn("No data plane region selected for range-read, defaulting to Region A.");
+                 } else {
+                    alert("Error: Could not find any data plane region checkboxes.");
+                    return; // Stop if no checkboxes exist
+                 }
+            }
+        } else {
+            dataPlaneParam = dataLeaderLocationSelect.value; // Single region string
+        }
         const transactionLeader = transactionLeaderLocationSelect.value;
 
         const runner = scenarioRunners[db]?.[req];
@@ -436,9 +525,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             try {
                 if (db === 'yugabyte' && req === '2pc-write') {
-                    await runner(controlLeader, dataLeader, transactionLeader);
+                    await runner(controlLeader, dataLeaderLocationSelect.value, transactionLeader);
                 } else {
-                    await runner(controlLeader, dataLeader);
+                    await runner(controlLeader, dataPlaneParam);
                 }
             } catch (error) {
                 console.error("Animation failed:", error);
@@ -461,12 +550,38 @@ document.addEventListener('DOMContentLoaded', () => {
         transactionLeaderControls.style.display = show ? '' : 'none';
     };
 
+
+    const updateDataPlaneSelectionUI = () => {
+        const isRangeRead = requestTypeSelect.value === 'range-read';
+        dataLeaderSingleControls.style.display = isRangeRead ? 'none' : '';
+        dataPlaneRegionsMultiDiv.style.display = isRangeRead ? 'inline-block' : 'none'; // Use inline-block
+
+        if (isRangeRead && dataPlaneRegionsMultiDiv.style.display !== 'none') {
+            let oneChecked = false;
+            dataRegionCheckboxes.forEach(cb => { if (cb.checked) oneChecked = true; });
+            if (!oneChecked) {
+                const firstCheckbox = dataRegionCheckboxes[0];
+                if (firstCheckbox) {
+                    firstCheckbox.checked = true;
+                    dataLeaderLocationSelect.value = firstCheckbox.value;
+                }
+            }
+        } else if (!isRangeRead) {
+             const singleValue = dataLeaderLocationSelect.value;
+             dataRegionCheckboxes.forEach(cb => {
+                 cb.checked = (cb.value === singleValue);
+             });
+        }
+    };
+
     [clientRegionSelect, dbTypeSelect, requestTypeSelect, controlLeaderLocationSelect, dataLeaderLocationSelect, transactionLeaderLocationSelect].forEach(select => {
         select.addEventListener('change', () => {
             saveControlState();
             updateTransactionLeaderVisibility();
 
             if (select === clientRegionSelect || select === dbTypeSelect || select === controlLeaderLocationSelect || select === dataLeaderLocationSelect || select === transactionLeaderLocationSelect) {
+        updateDataPlaneSelectionUI(); // Add this call
+
                  clearVisualization();
             }
         });
@@ -515,6 +630,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial Setup
     loadControlState();
     updateClientPosition();
+    updateDataPlaneSelectionUI(); // Add this call
+
     updateTransactionLeaderVisibility();
     clearVisualization();
 });
