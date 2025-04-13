@@ -88,6 +88,7 @@ document.addEventListener('DOMContentLoaded', () => {
             defs.appendChild(marker);
         }
     };
+
     setupSvgMarkers();
 
     function clearVisualization() {
@@ -130,20 +131,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function animatePacket(startNodeId, endNodeId, latency, accumulatedLatency, notAddLatency = false) {
+    // Function to update the total latency display and return the new accumulated latency
+    function updateLatency(latency, accumulatedLatency) {
+        const isNetworkLatency = latency >= NETWORK_LATENCY_THRESHOLD;
+        let newTotalLatency = accumulatedLatency;
+
+        if (isNetworkLatency) {
+            newTotalLatency += latency;
+            totalLatencySpan.textContent = newTotalLatency.toFixed(0);
+        }
+
+        return newTotalLatency;
+    }
+
+    // Animation function that only handles visualization, no latency calculation
+    async function animatePacket(startNodeId, endNodeId) {
         const startPos = getElementCenter(startNodeId);
         const endPos = getElementCenter(endNodeId);
 
         if (!startPos || !endPos) {
              console.warn(`Skipping animation: Cannot find/get position for ${startNodeId} or ${endNodeId}`);
-             return accumulatedLatency;
+             return;
         }
 
-        const isNetworkLatency = latency >= NETWORK_LATENCY_THRESHOLD;
+        // Calculate animation duration based on speed slider
         const maxSpeed = parseInt(speedSlider.max, 10);
         const currentSpeed = parseInt(speedSlider.value, 10);
-        const animationSpeedFactor = Math.max(0.1, (maxSpeed + 1 - currentSpeed) * 100);
-        const animationDuration = Math.max(50, latency * animationSpeedFactor * (isNetworkLatency ? 1 : 0.5));
+        const animationDuration = (maxSpeed + 1 - currentSpeed) * 200;
 
         const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
         dot.setAttribute('cx', startPos.x);
@@ -165,30 +179,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
         await animation.finished;
 
-        let newTotalLatency = accumulatedLatency;
-        if (isNetworkLatency && !notAddLatency) {
-            newTotalLatency += latency;
-            totalLatencySpan.textContent = newTotalLatency.toFixed(0);
-        }
-
         dot.style.opacity = 0;
         await sleep(50);
         dot.remove();
-        return newTotalLatency;
     }
 
     async function animateQuorumWrite(leader, follower1, follower2, accumulatedLatency, isAsync = false) {
+        // Calculate latency first
+        let currentLatency = accumulatedLatency;
+
         // Leader -> Followers (Parallel)
-        const promise1 = animatePacket(leader, follower1, ONE_WAY_LATENCY, accumulatedLatency, isAsync);
-        const promise2 = animatePacket(leader, follower2, ONE_WAY_LATENCY, accumulatedLatency, true); // Don't add latency for the second parallel packet
-        const results1 = await Promise.all([promise1, promise2]);
-        let currentLatency = results1[0]; // Use latency from the first promise if sync
+        if (!isAsync) {
+            currentLatency = updateLatency(ONE_WAY_LATENCY, currentLatency);
+        }
+
+        const promise1 = animatePacket(leader, follower1);
+        const promise2 = animatePacket(leader, follower2);
+        await Promise.all([promise1, promise2]);
 
         // Followers -> Leader (Parallel) - Response
-        const promise3 = animatePacket(follower1, leader, ONE_WAY_LATENCY, currentLatency, isAsync);
-        const promise4 = animatePacket(follower2, leader, ONE_WAY_LATENCY, currentLatency, true); // Don't add latency for the second parallel packet
-        const results2 = await Promise.all([promise3, promise4]);
-        return results2[0]; // Return latency from the first promise if sync
+        if (!isAsync) {
+            currentLatency = updateLatency(ONE_WAY_LATENCY, currentLatency);
+        }
+
+        const promise3 = animatePacket(follower1, leader);
+        const promise4 = animatePacket(follower2, leader);
+        await Promise.all([promise3, promise4]);
+
+        return currentLatency;
     }
 
     // --- TiDB Scenarios ---
@@ -203,11 +221,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const tidbNodeElement = document.getElementById(tidbNode);
         if (tidbNodeElement) tidbNodeElement.style.display = '';
 
-        currentLatency = await animatePacket(client, tidbNode, getLatency(clientRegion, clientRegion), currentLatency);
+        // Client to TiDB
+        const clientToTiDBLatency = getLatency(clientRegion, clientRegion);
+        currentLatency = updateLatency(clientToTiDBLatency, currentLatency);
+        await animatePacket(client, tidbNode);
+
+        // TiDB to TiKV
         const latencyToTiKV = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, tikvNode, latencyToTiKV, currentLatency);
-        currentLatency = await animatePacket(tikvNode, tidbNode, latencyToTiKV, currentLatency);
-        currentLatency = await animatePacket(tidbNode, client, getLatency(clientRegion, clientRegion), currentLatency);
+        currentLatency = updateLatency(latencyToTiKV, currentLatency);
+        await animatePacket(tidbNode, tikvNode);
+
+        // TiKV to TiDB
+        currentLatency = updateLatency(latencyToTiKV, currentLatency);
+        await animatePacket(tikvNode, tidbNode);
+
+        // TiDB to Client
+        currentLatency = updateLatency(clientToTiDBLatency, currentLatency);
+        await animatePacket(tidbNode, client);
+
         return currentLatency;
     }
 
@@ -226,15 +257,36 @@ document.addEventListener('DOMContentLoaded', () => {
         const tidbNodeElement = document.getElementById(tidbNode);
         if (tidbNodeElement) tidbNodeElement.style.display = '';
 
-        currentLatency = await animatePacket(client, tidbNode, getLatency(clientRegion, clientRegion), currentLatency);
+        // Client to TiDB
+        const clientToTiDBLatency = getLatency(clientRegion, clientRegion);
+        currentLatency = updateLatency(clientToTiDBLatency, currentLatency);
+        await animatePacket(client, tidbNode);
+
+        // TiDB to PD Leader
         const latencyToPD = getLatency(clientRegion, controlLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, pdLeader, latencyToPD, currentLatency);
-        currentLatency = await animatePacket(pdLeader, tidbNode, latencyToPD, currentLatency);
+        currentLatency = updateLatency(latencyToPD, currentLatency);
+        await animatePacket(tidbNode, pdLeader);
+
+        // PD Leader to TiDB
+        currentLatency = updateLatency(latencyToPD, currentLatency);
+        await animatePacket(pdLeader, tidbNode);
+
+        // TiDB to TiKV Leader
         const latencyToTiKVLeader = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, tikvLeader, latencyToTiKVLeader, currentLatency);
+        currentLatency = updateLatency(latencyToTiKVLeader, currentLatency);
+        await animatePacket(tidbNode, tikvLeader);
+
+        // TiKV Leader to Followers (Quorum Write)
         currentLatency = await animateQuorumWrite(tikvLeader, tikvFollower1, tikvFollower2, currentLatency);
-        currentLatency = await animatePacket(tikvLeader, tidbNode, latencyToTiKVLeader, currentLatency);
-        currentLatency = await animatePacket(tidbNode, client, getLatency(clientRegion, clientRegion), currentLatency);
+
+        // TiKV Leader to TiDB
+        currentLatency = updateLatency(latencyToTiKVLeader, currentLatency);
+        await animatePacket(tikvLeader, tidbNode);
+
+        // TiDB to Client
+        currentLatency = updateLatency(clientToTiDBLatency, currentLatency);
+        await animatePacket(tidbNode, client);
+
         return currentLatency;
     }
 
@@ -250,14 +302,33 @@ document.addEventListener('DOMContentLoaded', () => {
         const tidbNodeElement = document.getElementById(tidbNode);
         if (tidbNodeElement) tidbNodeElement.style.display = '';
 
-        currentLatency = await animatePacket(client, tidbNode, getLatency(clientRegion, clientRegion), currentLatency);
+        // Client to TiDB
+        const clientToTiDBLatency = getLatency(clientRegion, clientRegion);
+        currentLatency = updateLatency(clientToTiDBLatency, currentLatency);
+        await animatePacket(client, tidbNode);
+
+        // TiDB to PD Leader (Get TS)
         const latencyToPD = getLatency(clientRegion, controlLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, pdLeader, latencyToPD, currentLatency); // Get TS
-        currentLatency = await animatePacket(pdLeader, tidbNode, latencyToPD, currentLatency);
+        currentLatency = updateLatency(latencyToPD, currentLatency);
+        await animatePacket(tidbNode, pdLeader);
+
+        // PD Leader to TiDB
+        currentLatency = updateLatency(latencyToPD, currentLatency);
+        await animatePacket(pdLeader, tidbNode);
+
+        // TiDB to TiKV (Read data)
         const latencyToTiKV = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, tikvNode, latencyToTiKV, currentLatency); // Read data
-        currentLatency = await animatePacket(tikvNode, tidbNode, latencyToTiKV, currentLatency);
-        currentLatency = await animatePacket(tidbNode, client, getLatency(clientRegion, clientRegion), currentLatency);
+        currentLatency = updateLatency(latencyToTiKV, currentLatency);
+        await animatePacket(tidbNode, tikvNode);
+
+        // TiKV to TiDB
+        currentLatency = updateLatency(latencyToTiKV, currentLatency);
+        await animatePacket(tikvNode, tidbNode);
+
+        // TiDB to Client
+        currentLatency = updateLatency(clientToTiDBLatency, currentLatency);
+        await animatePacket(tidbNode, client);
+
         return currentLatency;
     }
 
@@ -276,28 +347,39 @@ document.addEventListener('DOMContentLoaded', () => {
         const tidbNodeElement = document.getElementById(tidbNode);
         if (tidbNodeElement) tidbNodeElement.style.display = '';
 
-        currentLatency = await animatePacket(client, tidbNode, getLatency(clientRegion, clientRegion), currentLatency); // Client interaction
+        // Client to TiDB
+        const clientToTiDBLatency = getLatency(clientRegion, clientRegion);
+        currentLatency = updateLatency(clientToTiDBLatency, currentLatency);
+        await animatePacket(client, tidbNode);
 
         // Get Commit TS from PD
         const latencyToPD = getLatency(clientRegion, controlLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, pdLeader, latencyToPD, currentLatency);
-        currentLatency = await animatePacket(pdLeader, tidbNode, latencyToPD, currentLatency);
+        currentLatency = updateLatency(latencyToPD, currentLatency);
+        await animatePacket(tidbNode, pdLeader);
+
+        currentLatency = updateLatency(latencyToPD, currentLatency);
+        await animatePacket(pdLeader, tidbNode);
 
         // Prewrite Phase
         const latencyToTiKVLeader = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(tidbNode, tikvLeader, latencyToTiKVLeader, currentLatency); // Prewrite primary
+        currentLatency = updateLatency(latencyToTiKVLeader, currentLatency);
+        await animatePacket(tidbNode, tikvLeader); // Prewrite primary
+
         currentLatency = await animateQuorumWrite(tikvLeader, tikvFollower1, tikvFollower2, currentLatency); // Prewrite primary replication
-        currentLatency = await animatePacket(tikvLeader, tidbNode, latencyToTiKVLeader, currentLatency); // Prewrite primary success
+
+        currentLatency = updateLatency(latencyToTiKVLeader, currentLatency);
+        await animatePacket(tikvLeader, tidbNode); // Prewrite primary success
 
         // Commit Phase (Async for Percolator)
         const asyncCommitPromise = (async () => {
-            let commitLatency = currentLatency;
-            commitLatency = await animatePacket(tidbNode, tikvLeader, latencyToTiKVLeader, commitLatency, true); // Commit primary (async)
-            await animateQuorumWrite(tikvLeader, tikvFollower1, tikvFollower2, commitLatency, true); // Commit primary replication (async)
+            // No latency added for async operations
+            await animatePacket(tidbNode, tikvLeader); // Commit primary (async)
+            await animateQuorumWrite(tikvLeader, tikvFollower1, tikvFollower2, currentLatency, true); // Commit primary replication (async)
         })();
 
         // Respond to client after prewrite success
-        currentLatency = await animatePacket(tidbNode, client, getLatency(clientRegion, clientRegion), currentLatency);
+        currentLatency = updateLatency(clientToTiDBLatency, currentLatency);
+        await animatePacket(tidbNode, client);
 
         await asyncCommitPromise;
         return currentLatency; // Return latency when client gets response
@@ -311,11 +393,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const localTServer = `yb-tserver-${clientRegion}`;
         const tabletLeader = `yb-tserver-${dataLeaderRegion}`;
 
-        currentLatency = await animatePacket(client, localTServer, getLatency(clientRegion, clientRegion), currentLatency);
+        // Client to local TServer
+        const clientToServerLatency = getLatency(clientRegion, clientRegion);
+        currentLatency = updateLatency(clientToServerLatency, currentLatency);
+        await animatePacket(client, localTServer);
+
+        // Local TServer to Tablet Leader
         const latencyToLeader = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(localTServer, tabletLeader, latencyToLeader, currentLatency);
-        currentLatency = await animatePacket(tabletLeader, localTServer, latencyToLeader, currentLatency);
-        currentLatency = await animatePacket(localTServer, client, getLatency(clientRegion, clientRegion), currentLatency);
+        currentLatency = updateLatency(latencyToLeader, currentLatency);
+        await animatePacket(localTServer, tabletLeader);
+
+        // Tablet Leader to Local TServer
+        currentLatency = updateLatency(latencyToLeader, currentLatency);
+        await animatePacket(tabletLeader, localTServer);
+
+        // Local TServer to Client
+        currentLatency = updateLatency(clientToServerLatency, currentLatency);
+        await animatePacket(localTServer, client);
+
         return currentLatency;
     }
 
@@ -329,12 +424,27 @@ document.addEventListener('DOMContentLoaded', () => {
         const tabletFollower1 = `yb-tserver-${followerRegions[0]}`;
         const tabletFollower2 = `yb-tserver-${followerRegions[1]}`;
 
-        currentLatency = await animatePacket(client, localTServer, getLatency(clientRegion, clientRegion), currentLatency);
+        // Client to local TServer
+        const clientToServerLatency = getLatency(clientRegion, clientRegion);
+        currentLatency = updateLatency(clientToServerLatency, currentLatency);
+        await animatePacket(client, localTServer);
+
+        // Local TServer to Tablet Leader
         const latencyToLeader = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(localTServer, tabletLeader, latencyToLeader, currentLatency); // Write to leader
+        currentLatency = updateLatency(latencyToLeader, currentLatency);
+        await animatePacket(localTServer, tabletLeader); // Write to leader
+
+        // Tablet Leader to Followers (Quorum Write)
         currentLatency = await animateQuorumWrite(tabletLeader, tabletFollower1, tabletFollower2, currentLatency); // Raft replication
-        currentLatency = await animatePacket(tabletLeader, localTServer, latencyToLeader, currentLatency); // Ack to coordinator
-        currentLatency = await animatePacket(localTServer, client, getLatency(clientRegion, clientRegion), currentLatency); // Ack to client
+
+        // Tablet Leader to Local TServer
+        currentLatency = updateLatency(latencyToLeader, currentLatency);
+        await animatePacket(tabletLeader, localTServer); // Ack to coordinator
+
+        // Local TServer to Client
+        currentLatency = updateLatency(clientToServerLatency, currentLatency);
+        await animatePacket(localTServer, client); // Ack to client
+
         return currentLatency;
     }
 
@@ -345,11 +455,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const localTServer = `yb-tserver-${clientRegion}`;
         const tabletLeader = `yb-tserver-${dataLeaderRegion}`;
 
-        currentLatency = await animatePacket(client, localTServer, getLatency(clientRegion, clientRegion), currentLatency);
+        // Client to local TServer
+        const clientToServerLatency = getLatency(clientRegion, clientRegion);
+        currentLatency = updateLatency(clientToServerLatency, currentLatency);
+        await animatePacket(client, localTServer);
+
+        // Local TServer to Tablet Leader
         const latencyToLeader = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(localTServer, tabletLeader, latencyToLeader, currentLatency);
-        currentLatency = await animatePacket(tabletLeader, localTServer, latencyToLeader, currentLatency);
-        currentLatency = await animatePacket(localTServer, client, getLatency(clientRegion, clientRegion), currentLatency);
+        currentLatency = updateLatency(latencyToLeader, currentLatency);
+        await animatePacket(localTServer, tabletLeader);
+
+        // Tablet Leader to Local TServer
+        currentLatency = updateLatency(latencyToLeader, currentLatency);
+        await animatePacket(tabletLeader, localTServer);
+
+        // Local TServer to Client
+        currentLatency = updateLatency(clientToServerLatency, currentLatency);
+        await animatePacket(localTServer, client);
+
         return currentLatency;
     }
 
@@ -368,37 +491,52 @@ document.addEventListener('DOMContentLoaded', () => {
         const dataFollower1 = `yb-tserver-${dataFollowerRegions[0]}`;
         const dataFollower2 = `yb-tserver-${dataFollowerRegions[1]}`;
 
-        currentLatency = await animatePacket(client, localTServer, getLatency(clientRegion, clientRegion), currentLatency);
+        // Client to local TServer
+        const clientToServerLatency = getLatency(clientRegion, clientRegion);
+        currentLatency = updateLatency(clientToServerLatency, currentLatency);
+        await animatePacket(client, localTServer);
 
         // Write Transaction Status Record
         const latencyToStatusLeader = getLatency(clientRegion, transactionLeaderRegion);
-        currentLatency = await animatePacket(localTServer, transactionStatusTabletLeader, latencyToStatusLeader, currentLatency);
+        currentLatency = updateLatency(latencyToStatusLeader, currentLatency);
+        await animatePacket(localTServer, transactionStatusTabletLeader);
+
         currentLatency = await animateQuorumWrite(transactionStatusTabletLeader, statusFollower1, statusFollower2, currentLatency);
-        currentLatency = await animatePacket(transactionStatusTabletLeader, localTServer, latencyToStatusLeader, currentLatency); // Ack
+
+        currentLatency = updateLatency(latencyToStatusLeader, currentLatency);
+        await animatePacket(transactionStatusTabletLeader, localTServer); // Ack
 
         // Write Provisional Records
         const latencyToDataLeader = getLatency(clientRegion, dataLeaderRegion);
-        currentLatency = await animatePacket(localTServer, involvedTabletLeader, latencyToDataLeader, currentLatency);
+        currentLatency = updateLatency(latencyToDataLeader, currentLatency);
+        await animatePacket(localTServer, involvedTabletLeader);
+
         currentLatency = await animateQuorumWrite(involvedTabletLeader, dataFollower1, dataFollower2, currentLatency);
-        currentLatency = await animatePacket(involvedTabletLeader, localTServer, latencyToDataLeader, currentLatency); // Ack
+
+        currentLatency = updateLatency(latencyToDataLeader, currentLatency);
+        await animatePacket(involvedTabletLeader, localTServer); // Ack
 
         // Commit Status Tablet
-        currentLatency = await animatePacket(localTServer, transactionStatusTabletLeader, latencyToStatusLeader, currentLatency);
+        currentLatency = updateLatency(latencyToStatusLeader, currentLatency);
+        await animatePacket(localTServer, transactionStatusTabletLeader);
+
         currentLatency = await animateQuorumWrite(transactionStatusTabletLeader, statusFollower1, statusFollower2, currentLatency);
 
         // Apply Phase (Async)
         const asyncApplyPromise = (async () => {
-            let applyLatency = currentLatency;
             const statusToDataLatency = getLatency(transactionLeaderRegion, dataLeaderRegion);
-            applyLatency = await animatePacket(transactionStatusTabletLeader, involvedTabletLeader, statusToDataLatency, applyLatency, true); // Apply provisional records (async)
-            await animateQuorumWrite(involvedTabletLeader, dataFollower1, dataFollower2, applyLatency, true); // Apply replication (async)
+            // No latency added for async operations
+            await animatePacket(transactionStatusTabletLeader, involvedTabletLeader); // Apply provisional records (async)
+            await animateQuorumWrite(involvedTabletLeader, dataFollower1, dataFollower2, currentLatency, true); // Apply replication (async)
         })();
 
         // Ack Commit back to Coordinator
-        currentLatency = await animatePacket(transactionStatusTabletLeader, localTServer, latencyToStatusLeader, currentLatency);
+        currentLatency = updateLatency(latencyToStatusLeader, currentLatency);
+        await animatePacket(transactionStatusTabletLeader, localTServer);
 
         // Ack back to Client
-        currentLatency = await animatePacket(localTServer, client, getLatency(clientRegion, clientRegion), currentLatency);
+        currentLatency = updateLatency(clientToServerLatency, currentLatency);
+        await animatePacket(localTServer, client);
 
         await asyncApplyPromise;
         return currentLatency; // Return latency when client is acked
