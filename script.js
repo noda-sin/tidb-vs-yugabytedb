@@ -242,7 +242,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return currentLatency;
     }
 
-    async function runTiDBPointWrite(controlLeaderRegion, dataLeaderRegion) {
+    async function runTiDB1PCWrite(controlLeaderRegion, dataLeaderRegion) {
         let currentLatency = 0;
         const clientRegion = clientRegionSelect.value;
         const client = 'client';
@@ -332,7 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return currentLatency;
     }
 
-    async function runTiDBRangeWrite(controlLeaderRegion, dataLeaderRegion) { // Percolator 2PC
+    async function runTiDB2PCWrite(controlLeaderRegion, dataLeaderRegion) { // Percolator 2PC
         let currentLatency = 0;
         const clientRegion = clientRegionSelect.value;
         const client = 'client';
@@ -414,7 +414,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return currentLatency;
     }
 
-    async function runYugabytePointWrite(controlLeaderRegion, dataLeaderRegion) { // Single Row Tx (Raft)
+    async function runYugabyte1PCWrite(controlLeaderRegion, dataLeaderRegion) { // Single Row Tx (Raft)
         let currentLatency = 0;
         const clientRegion = clientRegionSelect.value;
         const client = 'client';
@@ -477,7 +477,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
-    async function runYugabyteRangeWrite(controlLeaderRegion, dataLeaderRegion, transactionLeaderRegion) { // DocDB 2PC
+    async function runYugabyte2PCWrite(controlLeaderRegion, dataLeaderRegion, transactionLeaderRegion) { // DocDB 2PC
         let currentLatency = 0;
         const clientRegion = clientRegionSelect.value;
         const client = 'client';
@@ -524,8 +524,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Apply Phase (Async)
         const asyncApplyPromise = (async () => {
-            const statusToDataLatency = getLatency(transactionLeaderRegion, dataLeaderRegion);
-            // No latency added for async operations
             await animatePacket(transactionStatusTabletLeader, involvedTabletLeader); // Apply provisional records (async)
             await animateQuorumWrite(involvedTabletLeader, dataFollower1, dataFollower2, currentLatency, true); // Apply replication (async)
         })();
@@ -546,15 +544,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const scenarioRunners = {
         tidb: {
             'point-read': runTiDBPointRead,
-            '1pc-write': runTiDBPointWrite,
+            '1pc-write': runTiDB1PCWrite,
             'range-read': runTiDBRangeRead,
-            '2pc-write': runTiDBRangeWrite,
+            '2pc-write': runTiDB2PCWrite,
         },
         yugabyte: {
             'point-read': runYugabytePointRead,
-            '1pc-write': runYugabytePointWrite,
+            '1pc-write': runYugabyte1PCWrite,
             'range-read': runYugabyteRangeRead,
-            '2pc-write': runYugabyteRangeWrite,
+            '2pc-write': runYugabyte2PCWrite,
         }
     };
 
